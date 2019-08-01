@@ -3,17 +3,16 @@ package arrowtest
 import org.specs2._
 
 import java.io.{ ByteArrayInputStream, ByteArrayOutputStream }
-import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.util.Collections
 import java.util.Arrays.asList
 
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{ FieldVector, IntVector, TinyIntVector, VectorSchemaRoot }
+import org.apache.arrow.vector.{ IntVector, VectorSchemaRoot }
 import org.apache.arrow.vector.types.pojo.{ ArrowType, Field, FieldType, Schema }
 
-import org.apache.arrow.vector.ipc.{ ArrowStreamReader, ArrowStreamWriter }
+import org.apache.arrow.vector.ipc.{ ArrowReader, ArrowStreamReader, ArrowStreamWriter, ArrowWriter }
 
 class ArrowSpec extends Specification {
 
@@ -24,13 +23,27 @@ class ArrowSpec extends Specification {
   def is = s2"""
 
   ZIO Serdes should
-    work with byte arrows             $procRawBytes
-    process an empty stream arrow     $procEmptyStream
-    process zero length batch         $procStreamZeroLengthBatch
+    work with byte arrows             $testRawBytes
+    testess an empty stream arrow     $testEmptyStream
+    testess zero length batch         $testStreamZeroLengthBatch
+    Read and Write Arrow Stream       $testReadWrite
 
     """
 
-  def procRawBytes = {
+  def testSchema = {
+    val schema = new Schema(
+      asList(new Field("testField", FieldType.nullable(new ArrowType.Int(8, true)), Collections.emptyList()))
+    )
+    schema
+  }
+
+  def simpleSchema(vec: IntVector) =
+    new Schema(Collections.singletonList(vec.getField()), null)
+
+  def simpleRoot(schema: Schema): VectorSchemaRoot =
+    VectorSchemaRoot.create(schema, allocator)
+
+  def testRawBytes = {
 
     val arrLength = 64
 
@@ -47,17 +60,13 @@ class ArrowSpec extends Specification {
 
   }
 
-  def procEmptyStream = {
-
-    val schema = new Schema(
-      asList(new Field("testField", FieldType.nullable(new ArrowType.Int(8, true)), Collections.emptyList()))
-    )
-
-    val root: VectorSchemaRoot = VectorSchemaRoot.create(schema, allocator)
+  def testEmptyStream = {
 
     // Write the stream
     val out: ByteArrayOutputStream = new ByteArrayOutputStream()
-    val writer: ArrowStreamWriter  = new ArrowStreamWriter(root, null, out)
+
+    val schema                    = testSchema
+    val writer: ArrowStreamWriter = new ArrowStreamWriter(simpleRoot(schema), null, out)
     writer.close();
 
     // check output stream size
@@ -74,18 +83,18 @@ class ArrowSpec extends Specification {
       (reader.getVectorSchemaRoot.getRowCount === 0)
   }
 
-  def procStreamZeroLengthBatch = {
+  def testStreamZeroLengthBatch = {
     val os = new ByteArrayOutputStream()
 
-    val vector = new IntVector("foo", allocator)
-    val schema = new Schema(Collections.singletonList(vector.getField()), null)
+    val wvector = new IntVector("foo", allocator)
+    val schema  = new Schema(Collections.singletonList(wvector.getField()), null)
 
-    // val root = new VectorSchemaRoot(schema, Collections.singletonList(vector), vector.getValueCount()) // FIXME this doesnt work
-    val root: VectorSchemaRoot = VectorSchemaRoot.create(schema, allocator)
+    // val root = new VectorSchemaRoot(schema, Collections.singletonList(wvector), wvector.getValueCount()) // FIXME this doesnt work
+    val wroot: VectorSchemaRoot = VectorSchemaRoot.create(schema, allocator)
 
-    val writer = new ArrowStreamWriter(root, null, Channels.newChannel(os))
-    vector.setValueCount(0)
-    root.setRowCount(0)
+    val writer = new ArrowStreamWriter(wroot, null, Channels.newChannel(os))
+    wvector.setValueCount(0)
+    wroot.setRowCount(0)
     writer.writeBatch
     writer.end
 
@@ -103,25 +112,73 @@ class ArrowSpec extends Specification {
 
   }
 
-  def procStreamSocket = {
-    import org.apache.arrow.vector.types.Types.MinorType.TINYINT
-    import org.apache.arrow.tools.EchoServer
+  def testReadWrite = {
+    val numBatches = 1
 
-    // BufferAllocator alloc = new RootAllocator(Long.MAX_VALUE);
-
-    val field = new Field(
-      "testField",
-      new FieldType(true, new ArrowType.Int(8, true), null, null),
-      Collections.emptyList()
-    )
-
-    val vector = new TinyIntVector("testField", FieldType.nullable(TINYINT.getType()), allocator)
-    val schema = new Schema(asList(field))
-
-    // Try an empty stream, just the header.
-    // testEchoServer(8080, field, vector, 0)
+    val root = simpleRoot(testSchema)
+    root.getFieldVectors.get(0).allocateNew
+    //val vec:TinyIntVector = root.getFieldVectors.get(0)
+    val vec = root.getFieldVectors.get(0)
 
     true === true
   }
+
+  def testReadWriteMultipleBatches = {
+    val os = new ByteArrayOutputStream()
+
+    val vec    = new IntVector("foo", allocator)
+    val schema = simpleSchema(vec)
+    val root   = simpleRoot(schema)
+
+    val writer: ArrowStreamWriter = new ArrowStreamWriter(root, null, Channels.newChannel(os))
+
+    writeBatchData(writer, vec, root)
+
+    // Read and validate
+    val in = new ByteArrayInputStream(os.toByteArray)
+    val reader = new ArrowStreamReader(in, allocator)
+
+    true === true
+  }
+
+  // Test helpers
+  def writeBatchData(writer: ArrowWriter, vector: IntVector, root: VectorSchemaRoot) = {
+    writer.start
+
+    vector.setNull(0)
+    vector.setSafe(1, 1)
+    vector.setSafe(2, 2)
+    vector.setNull(3)
+    vector.setSafe(4, 1)
+    vector.setValueCount(5)
+    root.setRowCount(5)
+    writer.writeBatch
+
+    vector.setNull(0)
+    vector.setSafe(1, 1)
+    vector.setSafe(2, 2)
+    vector.setValueCount(3)
+    root.setRowCount(3)
+    writer.writeBatch
+
+    writer.end
+  }
+
+  def validateBatchData(reader: ArrowReader, vector: IntVector) =
+    reader.loadNextBatch
+
+  // assertEquals(vector.getValueCount(), 5)
+  // assertTrue(vector.isNull(0))
+  // assertEquals(vector.get(1), 1)
+  // assertEquals(vector.get(2), 2)
+  // assertTrue(vector.isNull(3))
+  // assertEquals(vector.get(4), 1)
+
+  // reader.loadNextBatch
+
+  // assertEquals(vector.getValueCount(), 3)
+  // assertTrue(vector.isNull(0))
+  // assertEquals(vector.get(1), 1)
+  // assertEquals(vector.get(2), 2)
 
 }
