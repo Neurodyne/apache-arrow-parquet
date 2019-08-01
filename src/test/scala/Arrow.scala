@@ -9,7 +9,7 @@ import java.util.Collections
 import java.util.Arrays.asList
 
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{ IntVector, VectorSchemaRoot }
+import org.apache.arrow.vector.{ IntVector, TinyIntVector, VectorSchemaRoot }
 import org.apache.arrow.vector.types.pojo.{ ArrowType, Field, FieldType, Schema }
 
 import org.apache.arrow.vector.ipc.{ ArrowReader, ArrowStreamReader, ArrowStreamWriter, ArrowWriter }
@@ -18,15 +18,16 @@ class ArrowSpec extends Specification {
 
   type BArr = Array[Byte]
 
-  val allocator = new RootAllocator(128)
+  val allocator = new RootAllocator(Integer.MAX_VALUE)
 
   def is = s2"""
 
   ZIO Serdes should
-    work with byte arrows             $testRawBytes
-    testess an empty stream arrow     $testEmptyStream
-    testess zero length batch         $testStreamZeroLengthBatch
-    Read and Write Arrow Stream       $testReadWrite
+    work with byte arrows                           $testRawBytes
+    work for an empty stream                        $testEmptyStream
+    wor for zero length batch                       $testStreamZeroLengthBatch
+    work for stream read and write                  $testReadWrite
+    read and write multiple batches                 $testReadWriteMultipleBatches
 
     """
 
@@ -113,14 +114,48 @@ class ArrowSpec extends Specification {
   }
 
   def testReadWrite = {
-    val numBatches = 1
+    val numBatches = 2
 
     val root = simpleRoot(testSchema)
     root.getFieldVectors.get(0).allocateNew
-    //val vec:TinyIntVector = root.getFieldVectors.get(0)
-    val vec = root.getFieldVectors.get(0)
+    val vec: TinyIntVector = root.getFieldVectors.get(0).asInstanceOf[TinyIntVector]
 
-    true === true
+    for (i <- 0 until 8)
+      vec.set(i, 1, (i + 1).toByte)
+
+    for (i <- 8 until 16)
+      vec.set(i, 0, (i + 1).toByte)
+
+    vec.setValueCount(16)
+    root.setRowCount(16)
+
+    val out = new ByteArrayOutputStream
+
+    val writer = new ArrowStreamWriter(root, null, out)
+    writer.start
+
+    for (i <- 0 to numBatches)
+      writer.writeBatch
+
+    writer.end
+
+    val bytesWritten = writer.bytesWritten
+
+    val in = new ByteArrayInputStream(out.toByteArray)
+
+    val reader     = new ArrowStreamReader(in, allocator)
+    val readSchema = reader.getVectorSchemaRoot.getSchema
+
+    readSchema === testSchema
+
+    for (i <- 0 to numBatches)
+      reader.loadNextBatch === true
+
+    // TODO figure out why reader isn't getting padding bytes
+    (bytesWritten === reader.bytesRead + 4) and
+      (reader.loadNextBatch === false) and
+      (reader.getVectorSchemaRoot.getRowCount === 0)
+
   }
 
   def testReadWriteMultipleBatches = {
@@ -135,10 +170,12 @@ class ArrowSpec extends Specification {
     writeBatchData(writer, vec, root)
 
     // Read and validate
-    val in = new ByteArrayInputStream(os.toByteArray)
+    val in     = new ByteArrayInputStream(os.toByteArray)
     val reader = new ArrowStreamReader(in, allocator)
 
-    true === true
+    val vector = reader.getVectorSchemaRoot.getFieldVectors.get(0)
+
+    validateBatchData(reader, vector.asInstanceOf[IntVector])
   }
 
   // Test helpers
@@ -164,21 +201,22 @@ class ArrowSpec extends Specification {
     writer.end
   }
 
-  def validateBatchData(reader: ArrowReader, vector: IntVector) =
+  def validateBatchData(reader: ArrowReader, vector: IntVector) = {
     reader.loadNextBatch
 
-  // assertEquals(vector.getValueCount(), 5)
-  // assertTrue(vector.isNull(0))
-  // assertEquals(vector.get(1), 1)
-  // assertEquals(vector.get(2), 2)
-  // assertTrue(vector.isNull(3))
-  // assertEquals(vector.get(4), 1)
+    (vector.getValueCount === 5) and
+      (vector.isNull(0) === true) and
+      (vector.get(1) === 1) and
+      (vector.get(2) === 2) and
+      (vector.isNull(3) === true) and
+      (vector.get(4) === 1)
 
-  // reader.loadNextBatch
+    reader.loadNextBatch
 
-  // assertEquals(vector.getValueCount(), 3)
-  // assertTrue(vector.isNull(0))
-  // assertEquals(vector.get(1), 1)
-  // assertEquals(vector.get(2), 2)
+    (vector.getValueCount === 3) and
+      (vector.isNull(0) === true) and
+      (vector.get(1) === 1) and
+      (vector.get(2) === 2)
+  }
 
 }
