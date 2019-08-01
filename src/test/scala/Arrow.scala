@@ -5,11 +5,12 @@ import org.specs2._
 import java.io.{ ByteArrayInputStream, ByteArrayOutputStream }
 import java.net.Socket
 import java.nio.ByteBuffer
+import java.nio.channels.Channels
 import java.util.Collections
 import java.util.Arrays.asList
 
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{ FieldVector, TinyIntVector, VectorSchemaRoot }
+import org.apache.arrow.vector.{ FieldVector, IntVector, TinyIntVector, VectorSchemaRoot }
 import org.apache.arrow.vector.types.pojo.{ ArrowType, Field, FieldType, Schema }
 
 import org.apache.arrow.vector.ipc.{ ArrowStreamReader, ArrowStreamWriter }
@@ -25,6 +26,7 @@ class ArrowSpec extends Specification {
   ZIO Serdes should
     work with byte arrows             $procRawBytes
     process an empty stream arrow     $procEmptyStream
+    process zero length batch         $procStreamZeroLengthBatch
 
     """
 
@@ -72,72 +74,32 @@ class ArrowSpec extends Specification {
       (reader.getVectorSchemaRoot.getRowCount === 0)
   }
 
-  def procStreamZeroLengthBatch =
-    // val os = new ByteArrayOutputStream()
+  def procStreamZeroLengthBatch = {
+    val os = new ByteArrayOutputStream()
 
-    // val vector = new IntVector("foo", allocator)
-    // val schema = new Schema(Collections.singletonList(vector.getField()), null)
+    val vector = new IntVector("foo", allocator)
+    val schema = new Schema(Collections.singletonList(vector.getField()), null)
 
-    // val root = new VectorSchemaRoot(schema, Collections.singletonList(vector), vector.getValueCount())
+    // val root = new VectorSchemaRoot(schema, Collections.singletonList(vector), vector.getValueCount()) // FIXME this doesnt work
+    val root: VectorSchemaRoot = VectorSchemaRoot.create(schema, allocator)
 
-    // val writer = new ArrowStreamWriter(root, null, Channels.newChannel(os))) {
-    // val writer = new ArrowStreamWriter(root, null, null)
-    // {
-    //   vector.setValueCount(0)
-    //   root.setRowCount(0)
-    //   writer.writeBatch()
-    //   writer.end()
-    // }
+    val writer = new ArrowStreamWriter(root, null, Channels.newChannel(os))
+    vector.setValueCount(0)
+    root.setRowCount(0)
+    writer.writeBatch
+    writer.end
 
-    // ByteArrayInputStream in = new ByteArrayInputStream(os.toByteArray());
+    val in = new ByteArrayInputStream(os.toByteArray())
 
-    // try (ArrowStreamReader reader = new ArrowStreamReader(in, allocator);) {
-    //   VectorSchemaRoot root = reader.getVectorSchemaRoot();
-    //   IntVector vector = (IntVector) root.getFieldVectors().get(0);
-    //   reader.loadNextBatch();
-    //   assertEquals(vector.getValueCount(), 0);
-    //   assertEquals(root.getRowCount(), 0);
-    true === true
+    val reader  = new ArrowStreamReader(in, allocator)
+    val rroot   = reader.getVectorSchemaRoot
+    val rvector = rroot.getFieldVectors.get(0)
 
-  def testEchoServer(serverPort: Int, field: Field, vector: FieldVector, batches: Int) = {
-    val size = 16
+    reader.loadNextBatch()
 
-    val root = new VectorSchemaRoot(asList(field), asList(vector), 0)
-// try (BufferAllocator alloc = new RootAllocator(Long.MAX_VALUE);
-    val socket = new Socket("localhost", serverPort);
-    val writer = new ArrowStreamWriter(root, null, socket.getOutputStream())
-    val reader = new ArrowStreamReader(socket.getInputStream(), allocator)
-    writer.start()
-    // vector.allocateNew(16)
-
-    // for (int i = 0; i < batches; i++) {
-// vector.allocateNew(16);
-// for (int j = 0; j < 8; j++) {
-// vector.set(j, j + i);
-// vector.set(j + 8, 0, (byte) (j + i));
-// }
-
-    vector.setValueCount(size)
-    root.setRowCount(size)
-    writer.writeBatch()
-    writer.end()
-
-    new Schema(asList(field)) === reader.getVectorSchemaRoot().getSchema()
-
-// TinyIntVector readVector = (TinyIntVector) reader.getVectorSchemaRoot()
-// .getFieldVectors().get(0);
-// for (int i = 0; i < batches; i++) {
-// Assert.assertTrue(reader.loadNextBatch());
-// assertEquals(16, reader.getVectorSchemaRoot().getRowCount());
-// assertEquals(16, readVector.getValueCount());
-// for (int j = 0; j < 8; j++) {
-// assertEquals(j + i, readVector.get(j));
-// assertTrue(readVector.isNull(j + 8));
-// }
-// }
-// Assert.assertFalse(reader.loadNextBatch());
-// assertEquals(0, reader.getVectorSchemaRoot().getRowCount());
-// assertEquals(reader.bytesRead(), writer.bytesWritten());
+    // should be empty
+    (rvector.getValueCount === 0) and
+      (rroot.getRowCount === 0)
 
   }
 

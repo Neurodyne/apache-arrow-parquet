@@ -12,11 +12,8 @@ lazy val root = (project in file("."))
     scalaVersion := "2.12.8",
     maxErrors := 3,
     libraryDependencies ++= Seq(
-      "org.specs2"       %% "specs2-core"    % Specs2Version % "test",
-      "org.apache.arrow" % "arrow-java-root" % ArrowVersion,
-      "org.apache.arrow" % "arrow-memory"    % ArrowVersion,
-      "org.apache.arrow" % "arrow-vector"    % ArrowVersion,
-      "org.apache.arrow" % "arrow-tools"     % ArrowVersion
+      "org.specs2"       %% "specs2-core" % Specs2Version % "test",
+      "org.apache.arrow" % "arrow-vector" % ArrowVersion
     )
   )
 
